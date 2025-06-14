@@ -14,30 +14,47 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 import html # 导入 html 模块用于处理 HTML 实体
 import tempfile
+import json
+from googleapiclient.errors import HttpError
 
 # Gmail API scopes
 SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
 
 def get_gmail_service():
     creds = None
-    # 首先尝试从 Streamlit Secrets 读取凭证
-    if 'GMAIL_CREDENTIALS' in st.secrets:
-        # 使用 tempfile 模块创建一个临时文件
-        with tempfile.NamedTemporaryFile(delete=False) as temp_creds_file:
-            temp_creds_file.write(st.secrets['GMAIL_CREDENTIALS'].encode('utf-8'))
-            temp_creds_file_path = temp_creds_file.name
-        
+    # 首先尝试从 Streamlit Secrets 中读取授权令牌（用于部署环境）
+    if 'GMAIL_TOKEN' in st.secrets:
         try:
-            flow = InstalledAppFlow.from_client_secrets_file(temp_creds_file_path, SCOPES)
-            creds = flow.run_local_server(port=0)
+            # 从 Secret 中加载 token.json 的内容
+            creds = Credentials.from_authorized_user_info(json.loads(st.secrets['GMAIL_TOKEN']), SCOPES)
+            # 如果令牌过期，尝试刷新
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
         except Exception as e:
-            st.error(f"从 Streamlit Secrets 初始化 Gmail API 失败: {e}")
+            st.error(f"从 Streamlit Secrets 加载授权令牌失败: {e}")
+            st.warning("请确保您的 'GMAIL_TOKEN' secret 包含有效的 token.json 内容。")
             return None
-        finally:
-            os.remove(temp_creds_file_path) # 删除临时文件
-        
+    # 如果没有 GMAIL_TOKEN 但有 GMAIL_CREDENTIALS（首次部署到云环境的场景）
+    elif 'GMAIL_CREDENTIALS' in st.secrets:
+        st.warning("在 Streamlit Cloud 上，首次认证需要手动操作。")
+        st.markdown("""
+        请按照以下步骤生成 `token.json` 并将其作为 Streamlit Secret `GMAIL_TOKEN` 添加：
+
+        1.  **在本地运行应用程序一次**：
+            `streamlit run gmail_verification_viewer.py`
+            这会打开一个浏览器窗口，引导您完成 Google 认证。完成后，`token.json` 文件将生成在本地。
+        2.  **复制 `token.json` 的内容**：
+            打开您本地生成的 `token.json` 文件，复制其中的所有 JSON 内容。
+        3.  **在 Streamlit Cloud 中添加 `GMAIL_TOKEN` Secret**：
+            登录 [share.streamlit.io](https://share.streamlit.io/)，找到您的应用。
+            点击 `...` -> `Settings` -> `Secrets` -> `+ Add a new secret`。
+            键 (Key) 输入 `GMAIL_TOKEN`，值 (Value) 粘贴您从 `token.json` 复制的内容。
+        4.  **重新部署应用**：
+            在 Streamlit Cloud 仪表板中重新部署您的应用程序。
+        """)
+        return None
+    # 本地开发环境（检查本地的 token.json 和 credentials.json 文件）
     else:
-        # 如果不在 Streamlit Secrets 中，尝试从本地文件加载
         if os.path.exists("token.json"):
             creds = Credentials.from_authorized_user_file("token.json", SCOPES)
         
@@ -64,14 +81,19 @@ def get_gmail_service():
                 
                 try:
                     flow = InstalledAppFlow.from_client_secrets_file("credentials.json", SCOPES)
-                    creds = flow.run_local_server(port=0)
+                    creds = flow.run_local_server(port=0) # 这会在本地打开浏览器进行认证
                 except Exception as e:
                     st.error(f"从本地 credentials.json 初始化 Gmail API 失败: {e}")
                     return None
             with open("token.json", "w") as token:
                 token.write(creds.to_json())
 
-    return build('gmail', 'v1', credentials=creds)
+    try:
+        service = build("gmail", "v1", credentials=creds)
+        return service
+    except HttpError as error:
+        st.error(f"初始化 Gmail API 服务失败: {error}")
+        return None
 
 def extract_verification_code(message):
     # 优先匹配特定格式的验证码，这些通常最准确
