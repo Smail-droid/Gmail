@@ -13,58 +13,63 @@ import google.auth
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 import html # 导入 html 模块用于处理 HTML 实体
+import tempfile
 
 # Gmail API scopes
 SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
 
 def get_gmail_service():
     creds = None
-    # The file token.pickle stores the user's access and refresh tokens
-    if os.path.exists('token.pickle'):
-        with open('token.pickle', 'rb') as token:
-            creds = pickle.load(token)
-    
-    # If there are no (valid) credentials available, let the user log in
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            if not os.path.exists('credentials.json'):
-                st.error("""
-                ❌ 错误：找不到 credentials.json 文件！
+    # 首先尝试从 Streamlit Secrets 读取凭证
+    if 'GMAIL_CREDENTIALS' in st.secrets:
+        # 使用 tempfile 模块创建一个临时文件
+        with tempfile.NamedTemporaryFile(delete=False) as temp_creds_file:
+            temp_creds_file.write(st.secrets['GMAIL_CREDENTIALS'].encode('utf-8'))
+            temp_creds_file_path = temp_creds_file.name
+        
+        try:
+            flow = InstalledAppFlow.from_client_secrets_file(temp_creds_file_path, SCOPES)
+            creds = flow.run_local_server(port=0)
+        except Exception as e:
+            st.error(f"从 Streamlit Secrets 初始化 Gmail API 失败: {e}")
+            return None
+        finally:
+            os.remove(temp_creds_file_path) # 删除临时文件
+        
+    else:
+        # 如果不在 Streamlit Secrets 中，尝试从本地文件加载
+        if os.path.exists("token.json"):
+            creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+        
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                if not os.path.exists("credentials.json"):
+                    st.error("❌ 错误：找不到 credentials.json 文件！")
+                    st.markdown("""
+                    请按照以下步骤操作：
+
+                    1. 访问 https://console.cloud.google.com/
+                    2. 创建新项目或选择现有项目
+                    3. 在左侧菜单选择"API 和服务" > "库"
+                    4. 搜索并启用 "Gmail API"
+                    5. 在左侧菜单选择"API 和服务" > "凭证"
+                    6. 点击"创建凭证" > "OAuth 客户端 ID"
+                    7. 选择应用类型为"桌面应用"
+                    8. 下载凭证文件并重命名为 'credentials.json'
+                    9. 将 credentials.json 放在与此程序相同的目录下
+                    """)
+                    return None
                 
-                请按照以下步骤操作：
-                1. 访问 https://console.cloud.google.com/
-                2. 创建新项目或选择现有项目
-                3. 在左侧菜单选择"API 和服务" > "库"
-                4. 搜索并启用 "Gmail API"
-                5. 在左侧菜单选择"API 和服务" > "凭证"
-                6. 点击"创建凭证" > "OAuth 客户端 ID"
-                7. 选择应用类型为"桌面应用"
-                8. 下载凭证文件并重命名为 'credentials.json'
-                9. 将 credentials.json 放在与此程序相同的目录下
-                """)
-                return None
-            try:
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    'credentials.json', SCOPES)
-                creds = flow.run_local_server(port=0)
-            except Exception as e:
-                st.error(f"""
-                ❌ 错误：无法加载 credentials.json 文件！
-                
-                错误信息：{str(e)}
-                
-                请确保：
-                1. credentials.json 文件格式正确
-                2. 文件内容完整且未损坏
-                3. 您已正确启用 Gmail API
-                4. 您已正确配置 OAuth 同意屏幕
-                """)
-                return None
-        # Save the credentials for the next run
-        with open('token.pickle', 'wb') as token:
-            pickle.dump(creds, token)
+                try:
+                    flow = InstalledAppFlow.from_client_secrets_file("credentials.json", SCOPES)
+                    creds = flow.run_local_server(port=0)
+                except Exception as e:
+                    st.error(f"从本地 credentials.json 初始化 Gmail API 失败: {e}")
+                    return None
+            with open("token.json", "w") as token:
+                token.write(creds.to_json())
 
     return build('gmail', 'v1', credentials=creds)
 
